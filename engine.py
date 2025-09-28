@@ -31,11 +31,114 @@ REQUIRED_COLS = {
 @dataclass(frozen=True)
 class MenuItem:
     prop_name: str
-    stat_name: Optional[str]  # None for composite
+    stat_name: Optional[str]  # None for composite or when using legacy fallback
     threshold: float
 
 def _to_menu(items: Sequence[Tuple[str, Optional[str], float]]) -> List[MenuItem]:
     return [MenuItem(*t) for t in items]
+
+# ----------------- Composites loader & evaluator -----------------
+def _load_composites(path: Optional[str]) -> List[dict]:
+    """
+    JSON schema:
+    [
+      {
+        "name": "Rush + Rec Yards",
+        "expr": "rush + rec",
+        "vars": { "rush": "Rushing Yards", "rec": "Receiving Yards" },
+        "missing_policy": "zero" | "propagate"
+      },
+      ...
+    ]
+    """
+    if not path:
+        return []
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"Composites file not found: {p}")
+    try:
+        # tolerate BOM
+        data = json.loads(p.read_text(encoding="utf-8-sig").lstrip("\ufeff"))
+    except Exception as e:
+        raise SystemExit(f"Failed to read composites JSON: {e}")
+    out = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise SystemExit(f"Composite[{i}] must be an object: {item!r}")
+        name = str(item.get("name") or "").strip()
+        expr = str(item.get("expr") or "").strip()
+        vars_map = item.get("vars") or {}
+        policy = (item.get("missing_policy") or "zero").strip().lower()
+        if not name or not expr or not isinstance(vars_map, dict):
+            raise SystemExit(f"Composite[{i}] invalid keys. Need name/expr/vars.")
+        if policy not in ("zero", "propagate"):
+            raise SystemExit(f"Composite[{i}] invalid missing_policy: {policy}")
+        out.append({"name": name, "expr": expr, "vars": vars_map, "missing_policy": policy})
+    return out
+
+def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], verbose: bool=False) -> None:
+    """
+    For each composite:
+      - Build local variables as Series from wide[stat_name]
+      - Apply missing policy
+      - Safely eval arithmetic expression using a tiny whitelist:
+        +, -, *, /, parentheses
+        min(a,b), max(a,b)   # two-arg versions
+        clamp(x, lo, hi)     # clips Series to [lo, hi]
+      - Write result into wide[name]
+    """
+    if not composites or wide.empty:
+        return
+
+    def s_min(a: pd.Series, b: pd.Series) -> pd.Series:
+        return pd.concat([pd.to_numeric(a, errors="coerce"),
+                          pd.to_numeric(b, errors="coerce")], axis=1).min(axis=1)
+
+    def s_max(a: pd.Series, b: pd.Series) -> pd.Series:
+        return pd.concat([pd.to_numeric(a, errors="coerce"),
+                          pd.to_numeric(b, errors="coerce")], axis=1).max(axis=1)
+
+    def clamp(x: pd.Series, lo: float, hi: float) -> pd.Series:
+        return pd.to_numeric(x, errors="coerce").clip(lower=float(lo), upper=float(hi))
+
+    safe_funcs = {
+        "min": s_min,
+        "max": s_max,
+        "clamp": clamp,
+    }
+
+    for comp in composites:
+        name = comp["name"]
+        expr = comp["expr"]
+        vars_map: Dict[str, str] = comp["vars"]
+        policy = comp["missing_policy"]
+
+        # Build locals dict {var: Series}
+        local_vars: Dict[str, pd.Series] = {}
+        for var, stat_col in vars_map.items():
+            col = str(stat_col).strip()
+            if col in wide.columns:
+                s = wide[col]
+            else:
+                # column missing -> all NaN
+                s = pd.Series([pd.NA] * len(wide), index=wide.index, dtype="float64")
+            if policy == "zero":
+                s = pd.to_numeric(s, errors="coerce").fillna(0.0)
+            else:
+                s = pd.to_numeric(s, errors="coerce")  # keep NaNs to propagate
+            local_vars[var] = s
+
+        # Safe eval: only allow our functions and locals; no builtins.
+        try:
+            result = eval(expr, {"__builtins__": {}, **safe_funcs}, local_vars)  # type: ignore[eval-used]
+        except Exception as e:
+            raise SystemExit(f"Composite '{name}' failed to evaluate: {e}")
+
+        result = pd.to_numeric(result, errors="coerce")
+        wide[name] = result
+        if verbose:
+            print(f"[composite] computed '{name}' from expr='{expr}' (policy={policy})")
+# ----------------- end composites -----------------
 
 def _load_menu(path: Optional[str]) -> List[MenuItem]:
     if not path:
@@ -45,7 +148,8 @@ def _load_menu(path: Optional[str]) -> List[MenuItem]:
         raise SystemExit(f"Menu file not found: {p}")
 
     if p.suffix.lower() == ".json":
-        data = json.loads(p.read_text(encoding="utf-8"))
+        # tolerate BOM
+        data = json.loads(p.read_text(encoding="utf-8-sig").lstrip("\ufeff"))
         out: List[MenuItem] = []
         for item in data:
             if isinstance(item, dict):
@@ -97,6 +201,8 @@ def build_board(
     long_df: pd.DataFrame,
     menu: Optional[Sequence[MenuItem | Tuple[str, Optional[str], float]]] = None,
     agg: str = "mean",
+    composites: Optional[List[dict]] = None,
+    verbose: bool = False,
 ) -> pd.DataFrame:
     if long_df.empty:
         return pd.DataFrame(columns=[
@@ -122,18 +228,24 @@ def build_board(
     )
     wide.columns = [str(c).strip() for c in wide.columns]
 
+    # Compute composites into 'wide'
+    _evaluate_composites_inplace(wide, composites or [], verbose=verbose)
+
     rows: List[Dict[str, object]] = []
     for _, r in wide.iterrows():
         rushing_tds = r.get("Rushing TDs", pd.NA)
         receiving_tds = r.get("Receiving TDs", pd.NA)
+
         for mi in menu_items:
-            if mi.prop_name == "Rush + Rec TDs":
+            # Legacy special-case still supported for backward compatibility
+            if mi.prop_name == "Rush + Rec TDs" and (not mi.stat_name or mi.stat_name not in r.index):
                 comp = 0.0
                 if pd.notna(rushing_tds): comp += float(rushing_tds)
                 if pd.notna(receiving_tds): comp += float(receiving_tds)
                 proj = comp
             else:
                 proj = r[mi.stat_name] if (mi.stat_name and mi.stat_name in r.index) else float("nan")
+
             if pd.notna(proj):
                 edge = float(proj) - float(mi.threshold)
                 rows.append({
@@ -145,6 +257,7 @@ def build_board(
                     "Spread": pd.to_numeric(r.get("spread", pd.NA), errors="coerce"),
                     "Source": r["source"],
                 })
+
     out = pd.DataFrame.from_records(rows)
     if out.empty: return out
     out = out.sort_values(
@@ -200,17 +313,36 @@ def cli_evaluate(args: argparse.Namespace) -> None:
     if df.empty: raise SystemExit("No rows left after applying filters.")
 
     menu = _load_menu(args.menu)
-    board = build_board(df, menu, agg=args.agg)
+    composites = _load_composites(args.composites)
+    board = build_board(df, menu, agg=args.agg, composites=composites, verbose=args.verbose)
+
     if args.preview:
         print(board.head(args.preview).to_string(index=False))
 
     if args.dry_run:
-        print("[evaluate] dry-run: not writing CSV")
+        print("[evaluate] dry-run: not writing CSVs")
         return
+
+    if not args.export:
+        raise SystemExit("--export is required unless --dry-run is set")
 
     out_path = Path(args.export); out_path.parent.mkdir(parents=True, exist_ok=True)
     board.to_csv(out_path, index=False)
     print(f"Wrote evaluation board -> {out_path} (rows={len(board)})")
+
+    # ---- summary-out (compact CSV of top-K) ----
+    if args.summary_out:
+        cols = ["Prop","Player","Pos","Team","Opp","Projection","Threshold","Edge","Source"]
+        for c in ["Team Total","Spread"]:
+            if c in board.columns: cols.append(c)
+        summary = (
+            board[cols]
+            .sort_values(by=["Edge","Team","Player"], ascending=[False, True, True])
+            .head(args.summary_top)
+        )
+        s_path = Path(args.summary_out); s_path.parent.mkdir(parents=True, exist_ok=True)
+        summary.to_csv(s_path, index=False)
+        print(f"Wrote summary -> {s_path} (rows={len(summary)})")
 
 def _ticket_ev(
     win_prob: List[float],
@@ -244,7 +376,7 @@ def _ticket_ev(
     return ev, dp
 
 def cli_ticket_ev(args: argparse.Namespace) -> None:
-    cfg = json.loads(Path(args.provider_config).read_text(encoding="utf-8"))
+    cfg = json.loads(Path(args.provider_config).read_text(encoding="utf-8-sig").lstrip("\ufeff"))
     entry_sizes = cfg.get("entry_sizes", [])
     min_multipliers: Dict[int, Dict[int, float]] = {
         int(m): {int(k): float(v) for k, v in d.items()}
@@ -285,8 +417,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ap_eval = sub.add_parser("evaluate", help="Evaluate projections to engine-menu board")
     ap_eval.add_argument("--league", required=True, choices=["cfb","nfl"])
     ap_eval.add_argument("--projections", required=True)
-    ap_eval.add_argument("--export", required=True)
+    ap_eval.add_argument("--export", required=False, default=None)
     ap_eval.add_argument("--menu", required=False, default=None)
+    ap_eval.add_argument("--composites", required=False, default=None, help="Path to composites JSON (name/expr/vars)")
     ap_eval.add_argument("--date", required=False, default=None)
     ap_eval.add_argument("--source", required=False, action="append")
     ap_eval.add_argument("--pos", required=False, action="append", help="Filter: include positions (repeatable)")
@@ -294,8 +427,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ap_eval.add_argument("--opp", required=False, action="append", help="Filter: include opponents (repeatable)")
     ap_eval.add_argument("--agg", choices=["mean","median","max"], default="mean", help="Aggregation for duplicate projections")
     ap_eval.add_argument("--preview", type=int, default=0, help="Show first N rows of the board")
-    ap_eval.add_argument("--dry-run", action="store_true", help="Preview only; do not write --export CSV")
+    ap_eval.add_argument("--dry-run", action="store_true", help="Preview only; do not write CSVs")
     ap_eval.add_argument("--verbose", action="store_true", help="Print row counts/stats")
+    ap_eval.add_argument("--summary-out", required=False, default=None, help="Optional compact CSV of top-K edges")
+    ap_eval.add_argument("--summary-top", type=int, default=20, help="Rows to include in summary-out")
     ap_eval.set_defaults(func=cli_evaluate)
 
     ap_tev = sub.add_parser("ticket-ev", help="Compute EV for a ticket")
