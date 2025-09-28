@@ -1,13 +1,21 @@
 ﻿# venv
 .venv/
+
 # Python cache
 __pycache__/
 *.pyc
+
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
-# outputs & data
+
+# build/output/data
 /out/
-*.csv
-/data/*.csv
+data/*.csv
+logs/
+*.zip
+
+# local spreadsheets/shortcuts
+*.xlsx
+*.lnk
