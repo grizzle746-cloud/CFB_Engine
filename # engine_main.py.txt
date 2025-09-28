@@ -1,0 +1,34 @@
+# engine_main.py
+import argparse, sys, pathlib, time
+import pandas as pd
+from sports_engine import run_engine, build_tickets
+
+def main():
+    ap = argparse.ArgumentParser(description="Run Pick-6 full engine")
+    ap.add_argument("--input", required=True, help="Path to input CSV (e.g., exports/props.csv)")
+    ap.add_argument("--out_dir", default="outputs", help="Output directory")
+    ap.add_argument("--league", default="CFB", choices=["CFB","NFL"])
+    ap.add_argument("--source", default="sportsline", choices=["sportsline","auto"])
+    ap.add_argument("--mode", default="max", choices=["max","balanced"])
+    ap.add_argument("--ticket_size", type=int, default=6)
+    ap.add_argument("--num_tickets", type=int, default=3)
+    args = ap.parse_args()
+
+    inp = pathlib.Path(args.input)
+    out_dir = pathlib.Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+
+    df = pd.read_csv(inp, encoding="utf-8")
+    picks = run_engine(df, league=args.league, source=args.source, mode=args.mode)
+    picks_path = out_dir / f"picks_{ts}.csv"
+    picks.to_csv(picks_path, index=False, encoding="utf-8")
+
+    tickets = build_tickets(picks, ticket_size=args.ticket_size, num_tickets=args.num_tickets, mode=args.mode)
+    tickets_path = out_dir / f"tickets_{ts}.csv"
+    tickets.to_csv(tickets_path, index=False, encoding="utf-8")
+
+    print(f"Wrote {picks_path} and {tickets_path}")
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,9 @@
+{
+  "entry_sizes": [5, 6],
+  "min_multipliers": {
+    "5": { "5": 15.0 },
+    "6": { "6": 25.0, "5": 1.25 }
+  },
+  "void_policy": "reduce_size",
+  "stake": 5.0
+}

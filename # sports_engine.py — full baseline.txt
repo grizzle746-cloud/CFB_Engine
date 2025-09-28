@@ -1,0 +1,155 @@
+# sports_engine.py — full baseline with ticket assembly, light correlation, Kelly fraction
+import pandas as pd
+import numpy as np
+from itertools import combinations
+
+# ---------- helpers ----------
+def _norm_num(x):
+    return pd.to_numeric(x, errors="coerce")
+
+def _standardize(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    for col in ["Player","Market","Line"]:
+        if col not in out.columns:
+            out[col] = np.nan
+    for c in ["Line","DKLine","Multiplier","Prob"]:
+        if c in out.columns:
+            out[c] = _norm_num(out[c])
+    if "DKLine" not in out.columns: out["DKLine"] = out["Line"]
+    if "Multiplier" not in out.columns: out["Multiplier"] = 1.0
+    return out
+
+def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "Prob" in out.columns:
+        out["WinProb"] = out["Prob"].clip(0,1)
+    else:
+        out["WinProb"] = 0.55
+    out["EV"] = out["WinProb"] * out["Multiplier"]
+    diff = out["Line"] - out["DKLine"]
+    out["Pick"] = np.where(diff >= 0, "MORE", "LESS")  # change to OVER/UNDER if you prefer
+    out["Edge"] = diff.fillna(0.0)
+    return out
+
+def _dedupe_players(df: pd.DataFrame) -> pd.DataFrame:
+    if "Player" not in df.columns: return df
+    df = df.sort_values(["Player","EV","WinProb"], ascending=[True,False,False])
+    return df.groupby("Player", as_index=False).head(1)
+
+def _rank(df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    out = df.copy()
+    if mode == "balanced":
+        out["RankScore"] = 0.6*out["WinProb"] + 0.4*(out["EV"]/out["Multiplier"].replace(0,np.nan))
+        out["RankScore"] = out["RankScore"].fillna(0)
+    else:  # "max"
+        out["RankScore"] = 0.4*out["WinProb"] + 0.6*out["EV"]
+    return out.sort_values("RankScore", ascending=False)
+
+def _market_group(market: str) -> str:
+    m = (market or "").lower()
+    if "rushing" in m: return "rush"
+    if "receiving" in m: return "recv"
+    if "receptions" in m: return "recv"
+    if "pass" in m: return "pass"
+    if "attempt" in m or "complet" in m: return "pass"
+    if "td" in m: return "td"
+    return "misc"
+
+def _pairwise_corr_penalty(p1: pd.Series, p2: pd.Series) -> float:
+    # Heuristic: same player → strong penalty; same team + same market group → moderate penalty
+    if str(p1["Player"]) == str(p2["Player"]): 
+        return 0.25
+    team1 = str(p1.get("Team","")).strip()
+    team2 = str(p2.get("Team","")).strip()
+    g1 = _market_group(str(p1["Market"]))
+    g2 = _market_group(str(p2["Market"]))
+    pen = 0.0
+    if team1 and team1 == team2:
+        if g1 == g2: pen += 0.10
+        else: pen += 0.05
+    # QB pass yards vs WR receptions mildly positive → no penalty
+    return pen
+
+def _kelly_fraction(win_prob: float, payout_mult: float) -> float:
+    # Kelly for binary bet with net odds b ≈ mult - 1. Clip to [0,1].
+    b = max(payout_mult - 1.0, 0.0)
+    p = float(np.clip(win_prob, 0.0, 1.0))
+    q = 1.0 - p
+    if b <= 0: return 0.0
+    f = (b*p - q)/b
+    return float(np.clip(f, 0.0, 1.0))
+
+# ---------- public API ----------
+def run_engine(df: pd.DataFrame, league="CFB", source="sportsline", mode="max") -> pd.DataFrame:
+    """Return ranked picks table."""
+    data = _standardize(df)
+    data = _calc_metrics(data)
+    data = _dedupe_players(data)  # one pick per player by default
+    data = data.dropna(subset=["Player","Market","DKLine"])
+    data = data[data["Player"].astype(str).str.len() > 0]
+    data = data[data["Market"].astype(str).str.len() > 0]
+    ranked = _rank(data, mode)
+    ranked["League"] = league
+    ranked["Source"] = source
+    ranked["Mode"]   = mode
+    ranked["Reason"] = np.where(
+        ranked["Pick"].eq("MORE"),
+        "Proj ≥ DKLine (lean OVER/MORE)",
+        "Proj < DKLine (lean UNDER/LESS)"
+    )
+    ranked["KellyFrac"] = [_kelly_fraction(p, m) for p,m in zip(ranked["WinProb"], ranked["Multiplier"])]
+    cols = ["Player","Team","Market","Pick","Line","DKLine","Multiplier","WinProb","Edge","EV",
+            "RankScore","KellyFrac","Reason","League","Source","Mode"]
+    existing = [c for c in cols if c in ranked.columns]
+    return ranked[existing].reset_index(drop=True)
+
+def _ticket_score(rows: pd.DataFrame) -> float:
+    """Score a ticket: product of win probs × correlation penalty × EV boost."""
+    probs = rows["WinProb"].clip(0,1).values
+    base = float(np.prod(probs)) if len(probs) else 0.0
+    pen = 1.0
+    for i,j in combinations(range(len(rows)), 2):
+        pen *= (1.0 - _pairwise_corr_penalty(rows.iloc[i], rows.iloc[j]))
+    ev_boost = float(np.mean(rows["EV"])) if "EV" in rows.columns and len(rows) else 1.0
+    return base * pen * (1.0 + 0.15*ev_boost)
+
+def build_tickets(picks: pd.DataFrame, ticket_size=6, num_tickets=3, mode="max") -> pd.DataFrame:
+    """Greedy Pick-6 assembly with no repeats per ticket and mild cross-ticket diversity."""
+    df = picks.copy().reset_index(drop=True)
+    used_players = set()
+    tickets = []
+    pool = df.to_dict("records")
+
+    for t in range(num_tickets):
+        chosen = []
+        local_used = set()
+        for _ in range(ticket_size):
+            best = None; best_score = -1e18
+            for r in pool:
+                pl = str(r.get("Player",""))
+                if pl in local_used:
+                    continue  # avoid repeats within a ticket
+                tmp_rows = pd.DataFrame(chosen + [r])
+                score = _ticket_score(tmp_rows)
+                if pl in used_players:
+                    score *= 0.97  # mild diversity
+                if score > best_score:
+                    best_score = score; best = r
+            if best is None: break
+            chosen.append(best); local_used.add(str(best.get("Player","")))
+        if len(chosen) == ticket_size:
+            used_players.update(local_used)
+            rows = pd.DataFrame(chosen)
+            rows["TicketID"] = f"T{t+1}"
+            rows["Leg"] = list(range(1, ticket_size+1))
+            rows["TicketScore"] = _ticket_score(rows)
+            tickets.append(rows)
+
+    if not tickets:
+        return pd.DataFrame(columns=["TicketID","Leg","Player","Market","Pick","WinProb","EV","TicketScore"])
+
+    out = pd.concat(tickets, ignore_index=True)
+    cols = ["TicketID","Leg","Player","Team","Market","Pick","Line","DKLine","Multiplier","WinProb","Edge","EV","TicketScore"]
+    existing = [c for c in cols if c in out.columns]
+    return out[existing].sort_values(["TicketID","Leg"]).reset_index(drop=True)

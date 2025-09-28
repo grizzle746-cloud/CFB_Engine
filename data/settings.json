@@ -1,0 +1,10 @@
+{
+  "league": "CFB",
+  "default_odds": -110.0,
+  "bankroll": 1000.0,
+  "stake": 20.0,
+  "pool": 40,
+  "hide_zero_proj": false,
+  "hide_blank_line": false,
+  "pick6_only": false
+}

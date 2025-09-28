@@ -1,0 +1,19 @@
+{
+  "player": ["player", "name", "player name", "full name", "PLAYER"],
+  "pos": ["pos", "position"],
+  "team": ["team"],
+  "opp": ["opponent", "opp"],
+  "PASSYD": "Passing Yards",
+  "RUSHYD": "Rushing Yards",
+  "RECYD": "Receiving Yards",
+  "RUSHTD": "Rush + Rec TDs",
+  "RECTD": "Rush + Rec TDs",
+  "TD": "Passing Touchdowns",
+  "INTS": "Interceptions",
+  "RECEPTIONS": "Receptions",
+  "REC": "Receptions",
+  "RUSHATT": "Rushing Attempts",
+  "ATT": "Rushing Attempts",
+  "PASSATT": "Pass Attempts",
+  "COMP": "Completions"
+}

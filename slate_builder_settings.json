@@ -1,0 +1,25 @@
+{
+  "league": "CFB",
+  "bankroll": 1000.0,
+  "stake": 20.0,
+  "pool_by_league": {
+    "CFB": 40,
+    "NFL": 30
+  },
+  "default_odds": -110.0,
+  "dedupe": true,
+  "max_per_team": 2,
+  "min_prop_kinds": 3,
+  "sigma_by_prop": {
+    "Passing Yards": 14.0,
+    "Rushing Yards": 12.0,
+    "Receiving Yards": 13.0,
+    "Receptions": 2.2,
+    "Completions": 2.5,
+    "Pass Attempts": 3.5,
+    "Rushing Attempts": 3.0,
+    "Passing Touchdowns": 0.7,
+    "Rush + Rec TDs": 0.6,
+    "Interceptions": 0.5
+  }
+}

@@ -1,0 +1,7 @@
+[
+  {"prop":"60+ Receiving Yards","stat":"Receiving Yards","threshold":60},
+  {"prop":"70+ Rushing Yards","stat":"Rushing Yards","threshold":70},
+  {"prop":"Pass + Rush Yards","formula":"sum","stats":["Passing Yards","Rushing Yards"],"threshold":300,"missing_policy":"zero"},
+  {"prop":"Rush + Rec Yards","formula":"sum","stats":["Rushing Yards","Receiving Yards"],"threshold":100},
+  {"prop":"Pass TDs - INTs","formula":"diff","stats":["Passing TDs","Interceptions"],"threshold":1}
+]
