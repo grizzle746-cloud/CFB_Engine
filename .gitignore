@@ -19,3 +19,14 @@ logs/
 # local spreadsheets/shortcuts
 *.xlsx
 *.lnk
+
+# local csv outputs
+/autosave_slate.csv
+/cfb_engine_menu_board.csv
+/normalized_cfb_projections.csv
+/sportsline_cfb_single_export.csv
+/sportsline_fixed.csv
+/sportsline_projections.csv
+/sportsline_projections_clean.csv
+/slates/
+
