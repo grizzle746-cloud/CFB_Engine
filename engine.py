@@ -103,7 +103,11 @@ def _validate_df(df: pd.DataFrame) -> pd.DataFrame:
 def build_board(
     long_df: pd.DataFrame,
     menu: Optional[Sequence[MenuItem | Tuple[str, Optional[str], float]]] = None,
+    agg: str = "mean",
 ) -> pd.DataFrame:
+    """
+    agg: one of 'mean' | 'median' | 'max'
+    """
     if long_df.empty:
         return pd.DataFrame(columns=[
             "Prop","Player","Pos","Team","Opp","Projection","Threshold","Edge",
@@ -124,10 +128,12 @@ def build_board(
     if "spread" in df.columns:
         index_cols.append("spread")
 
+    aggfunc = {"mean": "mean", "median": "median", "max": "max"}[agg]
+
     wide = (
         df.pivot_table(
             index=index_cols, columns="stat_name", values="projection",
-            aggfunc="mean", observed=False,
+            aggfunc=aggfunc, observed=False,
         ).reset_index()
     )
     # normalize column labels to plain, trimmed strings
@@ -143,7 +149,7 @@ def build_board(
             if mi.prop_name == "Rush + Rec TDs":
                 comp = 0.0
                 if pd.notna(rushing_tds): comp += float(rushing_tds)
-                if pd.notna(receiving_tds): comp += float(receiving_tds)  # noqa: E999
+                if pd.notna(receiving_tds): comp += float(receiving_tds)
                 proj = comp
             else:
                 if mi.stat_name and (mi.stat_name in r.index):
@@ -189,7 +195,14 @@ def _read_projections(path: str) -> pd.DataFrame:
         raise SystemExit(f"Failed to read projections CSV: {p} ({e})")
     return df
 
-def _apply_filters(df: pd.DataFrame, game_date: Optional[str], sources: Optional[List[str]]) -> pd.DataFrame:
+def _apply_filters(
+    df: pd.DataFrame,
+    game_date: Optional[str],
+    sources: Optional[List[str]],
+    pos: Optional[List[str]] = None,
+    team: Optional[List[str]] = None,
+    opp: Optional[List[str]] = None,
+) -> pd.DataFrame:
     out = df
     if game_date:
         out = out[out["game_date"].astype(str).str.strip() == str(game_date).strip()]
@@ -197,19 +210,39 @@ def _apply_filters(df: pd.DataFrame, game_date: Optional[str], sources: Optional
         srcs = {s.strip() for s in sources if s and str(s).strip()}
         if srcs:
             out = out[out["source"].isin(srcs)]
+    if pos:
+        poss = {p.strip() for p in pos if p and str(p).strip()}
+        if poss:
+            out = out[out["pos"].astype(str).str.strip().isin(poss)]
+    if team:
+        teams = {t.strip() for t in team if t and str(t).strip()}
+        if teams:
+            out = out[out["team"].astype(str).str.strip().isin(teams)]
+    if opp:
+        opps = {o.strip() for o in opp if o and str(o).strip()}
+        if opps:
+            out = out[out["opponent"].astype(str).str.strip().isin(opps)]
     return out
 
 # ---- CLI: evaluate ----
 def cli_evaluate(args: argparse.Namespace) -> None:
     df = _read_projections(args.projections)
     df = _validate_df(df)
+    if args.verbose:
+        print(f"[evaluate] loaded rows={len(df)}")
+
     if df.empty:
         raise SystemExit("Projections CSV is empty after validation.")
-    df = _apply_filters(df, args.date, args.source)
+    df = _apply_filters(df, args.date, args.source, args.pos, args.team, args.opp)
+    if args.verbose:
+        print(f"[evaluate] after filters rows={len(df)}")
+
     if df.empty:
-        raise SystemExit("No rows left after applying filters (date/source).")
+        raise SystemExit("No rows left after applying filters.")
+
     menu = _load_menu(args.menu)
-    board = build_board(df, menu)
+    board = build_board(df, menu, agg=args.agg)
+
     out_path = Path(args.export); out_path.parent.mkdir(parents=True, exist_ok=True)
     board.to_csv(out_path, index=False)
     print(f"Wrote evaluation board -> {out_path} (rows={len(board)})")
@@ -282,6 +315,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ap_eval.add_argument("--menu", required=False, default=None)
     ap_eval.add_argument("--date", required=False, default=None)
     ap_eval.add_argument("--source", required=False, action="append")
+    ap_eval.add_argument("--pos", required=False, action="append", help="Filter: include positions (repeatable)")
+    ap_eval.add_argument("--team", required=False, action="append", help="Filter: include teams (repeatable)")
+    ap_eval.add_argument("--opp", required=False, action="append", help="Filter: include opponents (repeatable)")
+    ap_eval.add_argument("--agg", choices=["mean","median","max"], default="mean", help="Aggregation for duplicate projections")
+    ap_eval.add_argument("--verbose", action="store_true", help="Print row counts/stats")
     ap_eval.set_defaults(func=cli_evaluate)
 
     ap_tev = sub.add_parser("ticket-ev", help="Compute EV for a ticket")
@@ -297,7 +335,7 @@ def main() -> None:
     args = _build_arg_parser().parse_args()
     args.func(args)
 
+__version__ = open('VERSION').read().strip() if Path('VERSION').exists() else '0.0.0'
+
 if __name__ == "__main__":
     main()
-
-__version__ = open('VERSION').read().strip()
