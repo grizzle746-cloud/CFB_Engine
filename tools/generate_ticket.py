@@ -12,21 +12,21 @@ def main():
     ap.add_argument("--void-prob", required=False, type=float, default=0.0, help="Per-leg void probability")
     ap.add_argument("--top", required=True, type=int, help="take top-N by Edge (desc)")
     ap.add_argument("--fallback-slope", required=False, type=float, default=0.35, help="Slope for gentle logistic fallback")
+    ap.add_argument("--preview", type=int, default=0, help="Show first N legs to be selected")
+    ap.add_argument("--dry-run", action="store_true", help="Preview only; do not write --out CSV")
     ap.add_argument("--out", required=True, help="Output ticket CSV")
     args = ap.parse_args()
 
     board = pd.read_csv(args.board).copy()
     board = board.sort_values("Edge", ascending=False).head(args.top)
 
-    # guardrail for provider rules (needs 5 or 6 legs)
     if len(board) < 5:
         raise SystemExit(f"Need at least 5 legs, got {len(board)}. Check menu/stat_name mapping or use more projections.")
 
-    # try model
     use_model = False
     if args.model:
         try:
-            m = json.loads(open(args.model).read())
+            m = json.loads(open(args.model, "r", encoding="utf-8").read())
             a, b = float(m["a"]), float(m["b"])
             z = a + b * board["Edge"].astype(float)
             if np.isfinite(z).all() and len(board) > 0:
@@ -35,11 +35,18 @@ def main():
         except Exception:
             use_model = False
 
-    # fallback
     if not use_model:
         board["win_prob"] = sigmoid(float(args.fallback_slope) * board["Edge"].astype(float))
 
     board["void_prob"] = float(args.void_prob)
+
+    if args.preview:
+        print(board[["Prop","Player","Edge","win_prob","void_prob"]].head(args.preview).to_string(index=False))
+
+    if args.dry_run:
+        print(f"[generate-ticket] dry-run: not writing {args.out} | model_used={use_model} | slope={args.fallback_slope}")
+        return
+
     board[["Prop","Player","win_prob","void_prob"]].to_csv(args.out, index=False)
     print(f"Wrote ticket -> {args.out} (rows={len(board)}) | model_used={use_model} | slope={args.fallback_slope}")
 
