@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
-
-
+import numpy as np
 # ---- Default menu ----
 DEFAULT_ENGINE_MENU: List[Tuple[str, Optional[str], float]] = [
     ("60+ Receiving Yards", "Receiving Yards", 60.0),
@@ -76,7 +75,7 @@ def _load_composites(path: Optional[str]) -> List[dict]:
         out.append({"name": name, "expr": expr, "vars": vars_map, "missing_policy": policy})
     return out
 
-def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], verbose: bool=False) -> None:
+def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], verbose: bool = False) -> None:
     """
     For each composite:
       - Build local variables as Series from wide[stat_name]
@@ -84,28 +83,27 @@ def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], ver
       - Safely eval arithmetic expression using a tiny whitelist:
         +, -, *, /, parentheses
         min(a,b), max(a,b)   # two-arg versions
-        clamp(x, lo, hi)     # clips Series to [lo, hi]
+        clamp(x, lo, hi)     # clip Series to [lo, hi]
       - Write result into wide[name]
     """
     if not composites or wide.empty:
         return
 
     def s_min(a: pd.Series, b: pd.Series) -> pd.Series:
-        return pd.concat([pd.to_numeric(a, errors="coerce"),
-                          pd.to_numeric(b, errors="coerce")], axis=1).min(axis=1)
+        a = pd.to_numeric(a, errors="coerce")
+        b = pd.to_numeric(b, errors="coerce")
+        return pd.concat([a, b], axis=1).min(axis=1)
 
     def s_max(a: pd.Series, b: pd.Series) -> pd.Series:
-        return pd.concat([pd.to_numeric(a, errors="coerce"),
-                          pd.to_numeric(b, errors="coerce")], axis=1).max(axis=1)
+        a = pd.to_numeric(a, errors="coerce")
+        b = pd.to_numeric(b, errors="coerce")
+        return pd.concat([a, b], axis=1).max(axis=1)
 
     def clamp(x: pd.Series, lo: float, hi: float) -> pd.Series:
-        return pd.to_numeric(x, errors="coerce").clip(lower=float(lo), upper=float(hi))
+        x = pd.to_numeric(x, errors="coerce")
+        return x.clip(lower=float(lo), upper=float(hi))
 
-    safe_funcs = {
-        "min": s_min,
-        "max": s_max,
-        "clamp": clamp,
-    }
+    safe_funcs = {"min": s_min, "max": s_max, "clamp": clamp}
 
     for comp in composites:
         name = comp["name"]
@@ -120,12 +118,15 @@ def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], ver
             if col in wide.columns:
                 s = wide[col]
             else:
-                # column missing -> all NaN
-                s = pd.Series([pd.NA] * len(wide), index=wide.index, dtype="float64")
+                # column missing -> all NaN (float-safe)
+                s = pd.Series(np.nan, index=wide.index, dtype="float64")
+
+            # normalize to numeric and apply missing policy
+            s = pd.to_numeric(s, errors="coerce")
             if policy == "zero":
-                s = pd.to_numeric(s, errors="coerce").fillna(0.0)
-            else:
-                s = pd.to_numeric(s, errors="coerce")  # keep NaNs to propagate
+                s = s.fillna(0.0)
+            # else: keep NaNs to propagate
+
             local_vars[var] = s
 
         # Safe eval: only allow our functions and locals; no builtins.
@@ -138,7 +139,6 @@ def _evaluate_composites_inplace(wide: pd.DataFrame, composites: List[dict], ver
         wide[name] = result
         if verbose:
             print(f"[composite] computed '{name}' from expr='{expr}' (policy={policy})")
-# ----------------- end composites -----------------
 
 def _load_menu(path: Optional[str]) -> List[MenuItem]:
     if not path:
@@ -452,3 +452,6 @@ __version__ = open('VERSION').read().strip() if Path('VERSION').exists() else '0
 
 if __name__ == "__main__":
     main()
+
+
+

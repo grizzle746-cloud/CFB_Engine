@@ -1,0 +1,39 @@
+[
+  {
+    "name": "Rush + Rec TDs",
+    "expr": "rtd + retd",
+    "vars": {
+      "rtd": "Rushing TDs",
+      "retd": "Receiving TDs"
+    },
+    "missing_policy": "zero"
+  },
+  {
+    "name": "Rush + Rec Yards",
+    "expr": "rush + rec",
+    "vars": {
+      "rush": "Rushing Yards",
+      "rec": "Receiving Yards"
+    },
+    "missing_policy": "zero"
+  },
+  {
+    "name": "Pass + Rush Yards",
+    "expr": "pass_ + rush",
+    "vars": {
+      "pass_": "Passing Yards",
+      "rush": "Rushing Yards"
+    },
+    "missing_policy": "zero"
+  },
+  {
+    "name": "All TDs (Pass+Rush+Rec)",
+    "expr": "ptd + rtd + retd",
+    "vars": {
+      "ptd": "Passing TDs",
+      "rtd": "Rushing TDs",
+      "retd": "Receiving TDs"
+    },
+    "missing_policy": "zero"
+  }
+]
